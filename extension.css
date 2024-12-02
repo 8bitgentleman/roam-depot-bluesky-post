@@ -1,0 +1,4 @@
+.input-group input[type="text"],
+.input-group input[type="password"]{
+    min-width: 200px;
+}
