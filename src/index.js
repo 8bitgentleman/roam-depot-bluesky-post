@@ -133,28 +133,47 @@ async function processBlockWithAgent(blockString, agent) {
   };
 }
 
+async function validateBlocks(blocks) {
+  const errors = [];
+  
+  blocks.forEach((block, index) => {
+    const position = index === 0 ? "root" : `reply #${index}`;
+    const textLength = block.text.length;
+    
+    if (textLength > BLUESKY_CHAR_LIMIT) {
+      errors.push({
+        position,
+        length: textLength,
+        limit: BLUESKY_CHAR_LIMIT,
+        overage: textLength - BLUESKY_CHAR_LIMIT
+      });
+    }
+  });
+  
+  if (errors.length > 0) {
+    const errorMessages = errors.map(error => 
+      `${error.position} post is ${error.length} characters (${error.overage} over ${error.limit} limit)`
+    );
+    throw new Error(`Character limit exceeded:\n${errorMessages.join('\n')}`);
+  }
+  
+  return true;
+}
+
 async function extractBlocks(uid, agent) {
-  // Pull pattern to get block string, children and their order
   const pattern = `[
     :block/string 
     {:block/children [:block/string :block/order]}
   ]`;
 
-  // Pull the data for the specified block
   const result = window.roamAlphaAPI.data.pull(
     pattern,
     [":block/uid", uid]
   );
-  console.log("result", result);
 
-  // Process the main block
   const processedMainBlock = await processBlockWithAgent(result[":block/string"] || '', agent);
-  console.log("processedMainBlock", processedMainBlock);
-
-  // Initialize array with the processed main block
   const processedBlocks = [processedMainBlock];
 
-  // If children exist, sort and process them
   if (result && result[":block/children"]?.length > 0) {
     const processedChildren = await Promise.all(
       result[":block/children"]
@@ -164,6 +183,9 @@ async function extractBlocks(uid, agent) {
 
     processedBlocks.push(...processedChildren);
   }
+
+  // make sure all blocks are under 300 char before returning
+  await validateBlocks(processedBlocks);
 
   return processedBlocks;
 }
@@ -282,7 +304,7 @@ async function postToBluesky(blockUid, extensionAPI) {
 
 async function onload({ extensionAPI }) {
   const panelConfig = {
-    tabTitle: pkg.name,
+    tabTitle: "Post to Bluesky",
     settings: [
       {
         id: "graphTokens",
