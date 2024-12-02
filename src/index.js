@@ -2,6 +2,7 @@ import pkg from '../package.json';
 import { RichText, AtpAgent } from '@atproto/api';
 import { showToast } from './components/toast';
 import BlueskyLoginPanel from './components/BlueskyLoginPanel';
+import DateAppendSetting from './components/DateAppendSetting';
 
 const BLUESKY_CHAR_LIMIT = 300;
 const BLOCK_REF_REGEX = /\(\(([\w\d-]{9,10})\)\)/;
@@ -9,6 +10,37 @@ const PAGE_REF_REGEX = /\[\[(.*?)\]\]/g;
 
 function getLoginInfo(extensionAPI) {
   return extensionAPI.settings.get('loginInfo') || null
+}
+
+function getAppendDateSettings(extensionAPI) {
+  return {
+    enabled: extensionAPI.settings.get('appendDate') || false,
+    template: extensionAPI.settings.get('appendTemplate') || 'sent on {DATE}'
+  };
+}
+
+async function updateBlockWithPostDate(blockUid, extensionAPI) {
+  const currentDate = new Date();
+  const pageTitle = window.roamAlphaAPI.util.dateToPageTitle(currentDate);
+  const { template } = getAppendDateSettings(extensionAPI);
+
+  // Get current block string
+  const currentBlock = window.roamAlphaAPI.data.pull(
+    '[:block/string]',
+    [':block/uid', blockUid]
+  );
+
+  const currentString = currentBlock?.[':block/string'] || '';
+  const appendText = template.replace('{DATE}', `[[${pageTitle}]]`);
+  const newString = `${currentString} ${appendText}`;
+
+  // Update the block
+  return window.roamAlphaAPI.data.block.update({
+    block: {
+      uid: blockUid,
+      string: newString
+    }
+  });
 }
 
 async function fetchImageAsBlob(url) {
@@ -19,17 +51,17 @@ async function fetchImageAsBlob(url) {
 
 async function uploadImages(mediaUrls, agent) {
   if (!mediaUrls.length) return null;
-  
+
   try {
     const uploadedImages = await Promise.all(
       mediaUrls.map(async (url) => {
         // Fetch the image
         const mediaBlob = await fetchImageAsBlob(url);
-        
+
         // Convert blob to Uint8Array for Bluesky's API
         const arrayBuffer = await mediaBlob.arrayBuffer();
         const uint8Array = new Uint8Array(arrayBuffer);
-        
+
         // Upload to Bluesky
         const { data: uploadData } = await agent.uploadBlob(uint8Array, {
           encoding: mediaBlob.type || 'image/jpeg'
@@ -52,50 +84,11 @@ async function uploadImages(mediaUrls, agent) {
       $type: 'app.bsky.embed.images',
       images: uploadedImages
     };
-    
+
   } catch (error) {
     console.error('Image upload error:', error);
     throw new Error(`Failed to upload images: ${error.message}`);
   }
-}
-
-async function processBlock(blockString) {
-  if (!blockString) {
-    return { text: '', mediaUrls: [], facets: [] };
-  }
-
-  // First extract any media attachments
-  const mediaUrls = [];
-  const textWithoutMedia = blockString.replace(/!\[[^\]]*\]\(([^\s)]*)\)/g, (_, url) => {
-    mediaUrls.push(url.replace("www.dropbox.com", "dl.dropboxusercontent.com"));
-    return "";
-  });
-
-  // Then resolve block references
-  const textWithResolvedRefs = textWithoutMedia.replace(BLOCK_REF_REGEX, (_, blockUid) => {
-    const reference = window.roamAlphaAPI.data.pull(
-      '[:block/string]',
-      [':block/uid', blockUid]
-    )?.[':block/string'];
-    return reference || '';
-  });
-
-  // Process page references - convert to hashtags
-  const textWithHashtags = textWithResolvedRefs.replace(PAGE_REF_REGEX, (match, pageName) => {
-    return `#${pageName.replace(/\s+/g, '')}`;
-  });
-
-  // Create RichText instance with processed text
-  const rt = new RichText({ text: textWithHashtags.trim() });
-  
-  // Initialize facets
-  await rt.detectFacets();
-
-  return {
-    text: rt.text || '',
-    facets: rt.facets || [],
-    mediaUrls: mediaUrls || []
-  };
 }
 
 async function processBlockWithAgent(blockString, agent) {
@@ -129,7 +122,7 @@ async function processBlockWithAgent(blockString, agent) {
 
   // Create RichText instance with processed text
   const rt = new RichText({ text: textWithHashtags.trim() });
-  
+
   // Initialize facets with agent
   await rt.detectFacets(agent);
 
@@ -175,7 +168,7 @@ async function extractBlocks(uid, agent) {
   return processedBlocks;
 }
 
-async function postToBluesky(processedBlocks, extensionAPI) {
+async function postToBluesky(blockUid, extensionAPI) {
   const loginInfo = getLoginInfo(extensionAPI);
   if (!loginInfo) {
     throw new Error("No Bluesky login saved - please add your login info in settings");
@@ -192,11 +185,11 @@ async function postToBluesky(processedBlocks, extensionAPI) {
     });
 
     // Get processed blocks with the agent
-    const blocks = await extractBlocks(processedBlocks, agent);
+    const blocks = await extractBlocks(blockUid, agent);
 
     // Process root post
     const rootBlock = blocks[0];
-    const rootEmbed = rootBlock.mediaUrls.length > 0 ? 
+    const rootEmbed = rootBlock.mediaUrls.length > 0 ?
       await uploadImages(rootBlock.mediaUrls, agent) : null;
 
     // Create root post record
@@ -217,13 +210,20 @@ async function postToBluesky(processedBlocks, extensionAPI) {
       rootRecord
     );
 
-    if (blocks.length === 1) return rootPost;
+    if (blocks.length === 1) {
+      console.log("getAppendDateSettings", getAppendDateSettings(extensionAPI));
+
+      if (getAppendDateSettings(extensionAPI).enabled) {
+        await updateBlockWithPostDate(blockUid, extensionAPI);
+      }
+      return rootPost;
+    }
 
     // Process thread
     let parentPost = rootPost;
     for (let i = 1; i < blocks.length; i++) {
       const block = blocks[i];
-      
+
       // Skip completely empty blocks
       if (!block.text && block.mediaUrls.length === 0) {
         console.log(`Skipping empty block at index ${i}`);
@@ -265,6 +265,13 @@ async function postToBluesky(processedBlocks, extensionAPI) {
         replyRecord
       );
     }
+    console.log("reply posted: now updating origional block");
+
+    console.log("getAppendDateSettings", getAppendDateSettings(extensionAPI));
+
+    if (getAppendDateSettings(extensionAPI).enabled) {
+      await updateBlockWithPostDate(blockUid, extensionAPI);
+    }
 
     return rootPost;
   } catch (error) {
@@ -286,15 +293,13 @@ async function onload({ extensionAPI }) {
         }
       },
       {
-        id: "button-setting",
-        name: "Button test",
-        description: "tests the button",
+        id: "dateAppend",
+        name: "Date Append Settings",
         action: {
-          type: "button",
-          onClick: (evt) => { console.log("Button clicked!"); },
-          content: "Button"
+          type: "reactComponent",
+          component: DateAppendSetting(extensionAPI)
         }
-      },
+      }
     ]
   };
   extensionAPI.settings.panel.create(panelConfig);
