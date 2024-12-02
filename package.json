@@ -1,6 +1,6 @@
 {
   "name": "roam-depot-bluesky-post",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Roam Research Plugin Example",
   "main": "index.js",
   "scripts": {
