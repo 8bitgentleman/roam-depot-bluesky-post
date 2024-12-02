@@ -1,8 +1,9 @@
 import pkg from '../package.json';
-import { AtpAgent, BlobRef } from '@atproto/api'
-import { AppBskyFeedPost } from '@atproto/api'
+import { AtpAgent, BlobRef, AppBskyFeedPost } from '@atproto/api'
 import { showToast } from './components/toast';
 import BlueskyLoginPanel from './components/BlueskyLoginPanel';
+
+const BLUESKY_CHAR_LIMIT = 300;
 
 function getLoginInfo(extensionAPI) {
   return extensionAPI.settings.get('loginInfo') || null
@@ -60,7 +61,8 @@ async function postThread(posts, extensionAPI) {
         }
       )
     }
-    showToast(`Blocks posted to Bluesky: ${login.username}`, "SUCCESS");
+
+    showToast(`Blocks posted to Bluesky: ${loginInfo.username}`, "SUCCESS");
 
   }
   return rootPost
@@ -129,13 +131,20 @@ async function onload({ extensionAPI }) {
     callback: () => {
       let block = window.roamAlphaAPI.ui.getFocusedBlock();
       if (block != null) {
-
-
-        let blocks = extractBlocks(
+        let blockStrings = extractBlocks(
           block['block-uid']
         );
-        console.log(blocks);
-        postThread(blocks, extensionAPI)
+        const invalidPost = blockStrings.findIndex(post => post.length > BLUESKY_CHAR_LIMIT);
+        
+        if (invalidPost !== -1) {
+          // If we found an invalid post, show toast and return
+          showToast(`Error: post number ${invalidPost + 1} has too many characters`, "DANGER");
+          return;
+        } else {
+          // postThread(blockStrings, extensionAPI)
+          console.log("All posts are valid:", blockStrings);
+        }
+        
 
       }
     },
